@@ -81,7 +81,7 @@ def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused):
 
 def testphotos(u_path, m_path, o_path, save_path):
     model = create_model(opt)
-    weight_path = r'./checkpoints/um_v10/07-03-11-19/1500'
+    weight_path = r'./checkpoints/um_v5/05-03-23-32/1500'
     model.load_network(model.MEF, 'MEF', weight_path)
     if not os.path.exists(save_path):
             os.makedirs(save_path)

@@ -6,7 +6,6 @@ import torch.nn.functional as F
 import numpy as np
 import torch
 from . import slice
-from .CTrans import ChannelTransformer
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -16,213 +15,164 @@ def weights_init(m):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
 
-class SELayer(nn.Module):
-    def __init__(self, channel, reduction=8):
-        super(SELayer, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channel, channel // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channel // reduction, channel, bias=False),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y.expand_as(x)
-
 class Res_block(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3):
+    def __init__(self, nFeat, kernel_size=3):
         super(Res_block, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=1, bias=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=1, bias=True)
+        self.conv1 = nn.Conv2d(nFeat, nFeat, kernel_size=kernel_size, padding=1, bias=True)
+        self.conv2 = nn.Conv2d(nFeat, nFeat, kernel_size=kernel_size, padding=1, bias=True)
 
     def forward(self, x):
         out = F.relu(self.conv1(x), inplace=True)
         out = self.conv2(out) + x
         return out
 
-# class Res_block(nn.Module):
-#     def __init__(self, nFeat, kernel_size=3):
-#         super(Res_block, self).__init__()
-#         self.conv1 = nn.Conv2d(nFeat, nFeat, kernel_size=kernel_size, padding=1, bias=True)
-#         self.conv2 = nn.Conv2d(nFeat, nFeat, kernel_size=kernel_size, padding=1, bias=True)
-
-#     def forward(self, x):
-#         out = F.relu(self.conv1(x), inplace=True)
-#         out = self.conv2(out) + x
-#         return out
-
 class Encoder(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels=3, mid_channels=32, out_channels=64, down_level=3):
         super(Encoder, self).__init__()
 
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride = 2, padding=1)
-        self.res_block1 = Res_block(out_channels, out_channels)
+        self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride = 2, padding=1)
+        self.res_block1 = Res_block(mid_channels)
         self.relu = nn.ReLU(inplace=True)
+        self.down = nn.ModuleList()  # Use nn.ModuleList to hold the modules
+        # first level: 32 -> 64
+        # second level: 64 -> 128
+        # third level: 128 -> 256
+        # fourth level: 256 -> 512
+        for i in range(down_level):
+            modules = nn.Sequential(
+                nn.Conv2d(mid_channels, out_channels, kernel_size=3, stride=2, padding=1),
+                Res_block(out_channels)
+            )
+            self.down.append(modules)
+            mid_channels *= 2
+            out_channels *= 2
 
     def forward(self, x):
         x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
         x = self.res_block1(x)
+        for i in range(len(self.down)):
+            x = self.down[i](x)
         return x
 
-class CCA(nn.Module):
-    """
-    CCA Block
-    """
-    def __init__(self, F_g, F_x):
-        super().__init__()
-        self.mlp_x = nn.Linear(F_x, F_x)
-        self.mlp_g = nn.Linear(F_g, F_g)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, g, x):
-        # channel-wise attention
-        # g from the lower level of decoder, x from the encoder
-        avg_pool_x = F.avg_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
-        flat_avg_pool_x = avg_pool_x.view(avg_pool_x.size(0), -1)
-        channel_att_x = self.mlp_x(flat_avg_pool_x)
-        avg_pool_g = F.avg_pool2d( g, (g.size(2), g.size(3)), stride=(g.size(2), g.size(3)))
-        flat_avg_pool_g = avg_pool_g.view(avg_pool_g.size(0), -1)
-        channel_att_g = self.mlp_g(flat_avg_pool_g)
-        # print(f"channel_att_x: {channel_att_x.shape}")
-
-        # 相較於原始論文是應用於segmentation，所以輸入只有一個branch
-        # 這邊是MEF所以有under, medium, over 三個branch
-        # 所以將channel_att_g重複三次
-        # 但是也有另外一種方式是將self.mlp_x的輸出變成跟self.mlp_g一樣的維度
-        # 這樣就不用重複channel_att_g，不確定何者效果較好，這邊先嘗試重複channel_att_g
-        channel_att_g_repeated = channel_att_g.repeat(1, 3)
-        # print(f"channel_att_g_repeated: {channel_att_g_repeated.shape}")
-        channel_att_sum = (channel_att_x + channel_att_g_repeated)/2.0
-        scale = torch.sigmoid(channel_att_sum).unsqueeze(2).unsqueeze(3).expand_as(x)
-        x_after_channel = x * scale
-        out = self.relu(x_after_channel)
-        return out
-
-class Decoder(nn.Module):
-    def __init__(self, in_channels, mid_channels, out_channels):
-        super().__init__()
-        # 還有一個重大的變化是
-        # 原本的decoder是將前一層的decoder跟encoder的skip connection做concat然後upsampling
-        # UCT是只將deocder前一層的輸出做upsampling才跟encoder的skip connection去做處理
-        self.conv_t = nn.ConvTranspose2d(in_channels, mid_channels, 4, 2, 1, bias=True)
-        self.coatt = CCA(F_g=mid_channels, F_x=mid_channels * 3) # because there are 4 branches of inputs
-        self.conv_res = Res_block(out_channels, out_channels)
-
-        # added for turning the num of channels of the input of conv_res is the same as the out_channels
-        self.conv = nn.Conv2d(mid_channels * 4, out_channels, kernel_size=3, padding=1)
-
-    def forward(self, x, skip_x):
-        # print("input x for conv_t: ", x.shape)
-        up = self.conv_t(x)
-        skip_x_att = self.coatt(up, skip_x)
-        x_concat = torch.cat([up, skip_x_att], dim=1)  # dim 1 is the channel dimension
-        x_conv = self.conv(x_concat)
-        x_res = self.conv_res(x_conv)
-        return x_res
-
-
 class MEF_dynamic(nn.Module):
-    def __init__(self, opt):
+    def __init__(self):
         super(MEF_dynamic, self).__init__()
         filters_in = 3
         filters_out = 3
         nFeat = 32
 
-        # encoder for under
-        self.conv_under = nn.Conv2d(filters_in, nFeat, 3, 1, 1, bias=True)
-        self.conv_under_E1 = Encoder(nFeat, nFeat)
-        self.conv_under_E2 = Encoder(nFeat, nFeat * 2)
-        self.conv_under_E3 = Encoder(nFeat * 2, nFeat * 4)
-        self.conv_under_E4 = Encoder(nFeat * 4, nFeat * 8)
+        # encoder1
+        self.conv1 = nn.Conv2d(filters_in, nFeat, 3, 1, 1, bias=True)
+        self.conv1_E0_1 = nn.Conv2d(nFeat, nFeat, 3, 2, 1, bias=True)
+        self.conv1_E0_2 = Res_block(nFeat)
+        self.conv1_E1_1 = nn.Conv2d(nFeat, nFeat * 2, 3, 2, 1, bias=True)
+        self.conv1_E1_2 = Res_block(nFeat * 2)
+        self.conv1_E2_1 = nn.Conv2d(nFeat * 2, nFeat * 4, 3, 2, 1, bias=True)
+        self.conv1_E2_2 = Res_block(nFeat * 4)
+        self.conv1_E3_1 = nn.Conv2d(nFeat * 4, nFeat * 8, 3, 2, 1, bias=True)
+        self.conv1_E3_2 = Res_block(nFeat * 8)
 
         # encoder2
-        self.conv_medium = nn.Conv2d(filters_in, nFeat, 3, 1, 1, bias=True)
-        self.conv_medium_E1 = Encoder(nFeat, nFeat)
-        self.conv_medium_E2 = Encoder(nFeat, nFeat * 2)
-        self.conv_medium_E3 = Encoder(nFeat * 2, nFeat * 4)
-        self.conv_medium_E4 = Encoder(nFeat * 4, nFeat * 8)
+        self.conv2 = nn.Conv2d(filters_in, nFeat, 3, 1, 1, bias=True)
+        self.conv2_E0_1 = nn.Conv2d(nFeat, nFeat, 3, 2, 1, bias=True)
+        self.conv2_E0_2 = Res_block(nFeat)
+        self.conv2_E1_1 = nn.Conv2d(nFeat, nFeat * 2, 3, 2, 1, bias=True)
+        self.conv2_E1_2 = Res_block(nFeat * 2)
+        self.conv2_E2_1 = nn.Conv2d(nFeat * 2, nFeat * 4, 3, 2, 1, bias=True)
+        self.conv2_E2_2 = Res_block(nFeat * 4)
+        self.conv2_E3_1 = nn.Conv2d(nFeat * 4, nFeat * 8, 3, 2, 1, bias=True)
+        self.conv2_E3_2 = Res_block(nFeat * 8)
 
         # encoder3
-        self.conv_over = nn.Conv2d(filters_in, nFeat, 3, 1, 1, bias=True)
-        self.conv_over_E1 = Encoder(nFeat, nFeat)
-        self.conv_over_E2 = Encoder(nFeat, nFeat * 2)
-        self.conv_over_E3 = Encoder(nFeat * 2, nFeat * 4)
-        self.conv_over_E4 = Encoder(nFeat * 4, nFeat * 8)
+        self.conv3 = nn.Conv2d(filters_in, nFeat, 3, 1, 1, bias=True)
+        self.conv3_E0_1 = nn.Conv2d(nFeat, nFeat, 3, 2, 1, bias=True)
+        self.conv3_E0_2 = Res_block(nFeat)
+        self.conv3_E1_1 = nn.Conv2d(nFeat, nFeat * 2, 3, 2, 1, bias=True)
+        self.conv3_E1_2 = Res_block(nFeat * 2)
+        self.conv3_E2_1 = nn.Conv2d(nFeat * 2, nFeat * 4, 3, 2, 1, bias=True)
+        self.conv3_E2_2 = Res_block(nFeat * 4)
+        self.conv3_E3_1 = nn.Conv2d(nFeat * 4, nFeat * 8, 3, 2, 1, bias=True)
+        self.conv3_E3_2 = Res_block(nFeat * 8)
 
         # merge
-        self.merger = AHDR()
-
-        self.cct = ChannelTransformer(opt, vis=False, channel_num=[nFeat * 3, nFeat * 3, nFeat * 3 * 2, nFeat * 3 * 4])
+        self.res_module = AHDR()
 
         # decoder
-        self.conv_D3 = Decoder(nFeat * 8, nFeat * 4, nFeat * 4)
-        self.conv_D2 = Decoder(nFeat * 4, nFeat * 2, nFeat * 2)
-        self.conv_D1 = Decoder(nFeat * 2, nFeat, nFeat)
-        self.conv_D0 = Decoder(nFeat * 1, nFeat, nFeat * 3)
+        self.conv_D3_1 = nn.ConvTranspose2d(nFeat * 8, nFeat * 4, 4, 2, 1, bias=True)
+        self.conv_D3_2 = Res_block(nFeat * 4)
+        self.conv_D2_1 = nn.ConvTranspose2d(nFeat * 16, nFeat * 2, 4, 2, 1, bias=True)
+        self.conv_D2_2 = Res_block(nFeat * 2)
+        self.conv_D1_1 = nn.ConvTranspose2d(nFeat * 8, nFeat, 4, 2, 1, bias=True)
+        self.conv_D1_2 = Res_block(nFeat)
+        self.conv_D0_1 = nn.ConvTranspose2d(nFeat * 4, nFeat, 4, 2, 1, bias=True)
+        self.conv_D0_2 = Res_block(nFeat)
+        self.conv_D_1 = nn.Conv2d(nFeat * 4, nFeat * 3, 3, 1, 1, bias=True)
+        self.conv_D_2 = Res_block(nFeat * 3)
+
         self.conv_out = nn.Conv2d(nFeat * 3, nFeat * 3, 3, 1, 1, bias=True)
-        # self.conv_D_2 = Res_block(nFeat * 3)
-
-        # self.conv_out = nn.Conv2d(nFeat * 3, nFeat * 3, 3, 1, 1, bias=True)
         self.relu = nn.ReLU(inplace=True)
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, under, medium, over):
+    def forward(self, x1, x2, x3):
 
          # Encoder1
-        E0_under = self.relu(self.conv_under(under))
+        E1 = self.relu(self.conv1(x1))
         # print(f"E1: {E1.shape}")
-        E1_under = self.conv_under_E1(E0_under)
+        E1_0 = self.relu(self.conv1_E0_1(E1))
+        E1_0 = self.conv1_E0_2(E1_0)
         # print(f"E1_0: {E1_0.shape}")
-        E2_under = self.conv_under_E2(E1_under)
+        E1_1 = self.relu(self.conv1_E1_1(E1_0))
+        E1_1 = self.conv1_E1_2(E1_1)
         # print(f"E1_1: {E1_1.shape}")
-        E3_under = self.conv_under_E3(E2_under)
+        E1_2 = self.relu(self.conv1_E2_1(E1_1))
+        E1_2 = self.conv1_E2_2(E1_2)
         # print(f"E1_2: {E1_2.shape}")
-        E4_under = self.conv_under_E4(E3_under)
+        E1_3 = self.relu(self.conv1_E3_1(E1_2))
+        E1_3 = self.conv1_E3_2(E1_3)
         # print(f"E1_3: {E1_3.shape}")
 
         # Encoder2
-        E0_medium = self.relu(self.conv_medium(medium))
-        E1_medium = self.conv_medium_E1(E0_medium)
-        E2_medium = self.conv_medium_E2(E1_medium)
-        E3_medium = self.conv_medium_E3(E2_medium)
-        E4_medium = self.conv_medium_E4(E3_medium)
+        E2 = self.relu(self.conv2(x2))
+        E2_0 = self.relu(self.conv2_E0_1(E2))
+        E2_0 = self.conv2_E0_2(E2_0)
+        E2_1 = self.relu(self.conv2_E1_1(E2_0))
+        E2_1 = self.conv2_E1_2(E2_1)
+        E2_2 = self.relu(self.conv2_E2_1(E2_1))
+        E2_2 = self.conv2_E2_2(E2_2)
+        E2_3 = self.relu(self.conv2_E3_1(E2_2))
+        E2_3 = self.conv2_E3_2(E2_3)
 
         # Encoder3
-        E0_over = self.relu(self.conv_over(over))
-        E1_over = self.conv_over_E1(E0_over)
-        E2_over = self.conv_over_E2(E1_over)
-        E3_over = self.conv_over_E3(E2_over)
-        E4_over = self.conv_over_E4(E3_over)
+        E3 = self.relu(self.conv3(x3))
+        E3_0 = self.relu(self.conv3_E0_1(E3))
+        E3_0 = self.conv3_E0_2(E3_0)
+        E3_1 = self.relu(self.conv3_E1_1(E3_0))
+        E3_1 = self.conv3_E1_2(E3_1)
+        E3_2 = self.relu(self.conv3_E2_1(E3_1))
+        E3_2 = self.conv3_E2_2(E3_2)
+        E3_3 = self.relu(self.conv3_E3_1(E3_2))
+        E3_3 = self.conv3_E3_2(E3_3)
 
-        # print(f"merged_tensor: {merged_tensor.shape}")
-
-        E0_concat = torch.cat([E0_under, E0_medium, E0_over], dim=1)
-        # print(f"E0_concat: {E0_concat.shape}")
-        E1_concat = torch.cat([E1_under, E1_medium, E1_over], dim=1)
-        # print(f"E1_concat: {E1_concat.shape}")
-        E2_concat = torch.cat([E2_under, E2_medium, E2_over], dim=1)
-        # print(f"E2_concat: {E2_concat.shape}")
-        E3_concat = torch.cat([E3_under, E3_medium, E3_over], dim=1)
-        # print(f"E3_concat: {E3_concat.shape}")
-        O0, O1, O2, O3, attn_weight = self.cct(E0_concat, E1_concat, E2_concat, E3_concat)
-
-        merged_tensor = self.merger(E4_under, E4_medium, E4_over)
+        res_tensor = self.res_module(E1_3, E2_3, E3_3)
+        # print(f"res_tensor: {res_tensor.shape}")
 
         # Decoder
-        # print(f"O3: {O3.shape}")
-        D3 = self.conv_D3(merged_tensor, O3)
+        D3 = self.relu(self.conv_D3_1(res_tensor))
+        D3 = self.conv_D3_2(D3)
         # print(f"D3: {D3.shape}")
-        # print(f"O2: {O2.shape}")
-        D2 = self.conv_D2(D3, O2)
+        D2 = self.relu(self.conv_D2_1(torch.cat([D3, E1_2, E2_2, E3_2], dim=1)))
+        D2 = self.conv_D2_2(D2)
         # print(f"D2: {D2.shape}")
-        D1 = self.conv_D1(D2, O1)
+        D1 = self.relu(self.conv_D1_1(torch.cat([D2, E1_1, E2_1, E3_1], dim=1)))
+        D1 = self.conv_D1_2(D1)
         # print(f"D1: {D1.shape}")
-        D0 = self.conv_D0(D1, O0)
+        D0 = self.relu(self.conv_D0_1(torch.cat([D1, E1_0, E2_0, E3_0], dim=1)))
+        D0 = self.conv_D0_2(D0)
         # print(f"D0: {D0.shape}")
-        D = self.conv_out(D0)
+        D = self.relu(self.conv_D_1(torch.cat([D0, E1, E2, E3], dim=1)))
+        D = self.conv_D_2(D)
         # print(f"D: {D.shape}")
 
         output = torch.stack(torch.split(D, 3 * 4, 1),2)
@@ -230,7 +180,6 @@ class MEF_dynamic(nn.Module):
         # out = self.sigmoid(self.conv_out(D))
         #return D3, D2, D1, D0, D, out # for training
         return output
-
 
 # merging module
 class make_dilation_dense(nn.Module):
@@ -256,19 +205,16 @@ class DRDB(nn.Module):
         # * unpacks the list of modules into the nn.Sequential
         self.dense_layers = nn.Sequential(*modules)
         self.conv_1x1 = nn.Conv2d(nChannels_, nChannels, kernel_size=1, padding=0, bias=True)
-        self.se = SELayer(nChannels)
 
     def forward(self, x):
         out = self.dense_layers(x)
         out = self.conv_1x1(out)
-        out = self.se(out)
         out = out + x
         return out
 
 class AHDR(nn.Module):
     def __init__(self, nFeat=256, nChannel=3, nDenselayer=6, growthRate=32):
         super(AHDR, self).__init__()
-        self.se = SELayer(nFeat * 3)
 
         # merging
         self.conv2 = nn.Conv2d(nFeat * 3, nFeat, kernel_size=3, padding=1, bias=True)
@@ -290,10 +236,9 @@ class AHDR(nn.Module):
 
     def forward(self, x1, x2, x3):
         F_ = torch.cat((x1, x2, x3), 1) # Z_s
-        F_se = self.se(F_)
 
         # there should be LeakyReLU after convolution according to the paper, but it is not implemented here
-        F_0 = self.conv2(F_se)
+        F_0 = self.conv2(F_)
         F_1 = self.RDB1(F_0)
         F_2 = self.RDB2(F_1)
         F_3 = self.RDB3(F_2)
@@ -384,7 +329,7 @@ class MEFPointwiseNN(nn.Module):
 
     def __init__(self, opt):
         super(MEFPointwiseNN, self).__init__()
-        self.coeffs = MEF_dynamic(opt)
+        self.coeffs = MEF_dynamic()
         self.guide = GuideNN(opt=opt)
         self.slice = Slice()
         self.apply_coeffs = ApplyCoeffs()
