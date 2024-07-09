@@ -26,35 +26,6 @@ class Res_block(nn.Module):
         out = self.conv2(out) + x
         return out
 
-class Encoder(nn.Module):
-    def __init__(self, in_channels=3, mid_channels=32, out_channels=64, down_level=3):
-        super(Encoder, self).__init__()
-
-        self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride = 2, padding=1)
-        self.res_block1 = Res_block(mid_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.down = nn.ModuleList()  # Use nn.ModuleList to hold the modules
-        # first level: 32 -> 64
-        # second level: 64 -> 128
-        # third level: 128 -> 256
-        # fourth level: 256 -> 512
-        for i in range(down_level):
-            modules = nn.Sequential(
-                nn.Conv2d(mid_channels, out_channels, kernel_size=3, stride=2, padding=1),
-                Res_block(out_channels)
-            )
-            self.down.append(modules)
-            mid_channels *= 2
-            out_channels *= 2
-
-    def forward(self, x):
-        x = self.relu(self.conv1(x))
-        x = self.relu(self.conv2(x))
-        x = self.res_block1(x)
-        for i in range(len(self.down)):
-            x = self.down[i](x)
-        return x
 
 class MEF_dynamic(nn.Module):
     def __init__(self):
@@ -245,14 +216,15 @@ class AHDR(nn.Module):
         F_4 = torch.cat((F_1, F_2, F_3), 1)
         FdLF = self.GFF_1x1(F_4) # this isn't in the paper
         FGF = self.GFF_3x3(FdLF)
-        F_6 = FGF + x2
-        F_7 = self.conv_up(F_6)
+        F_6 = FGF + x3
+        return F_6
+        # F_7 = self.conv_up(F_6)
 
-        output = self.conv3(F_7)
+        # output = self.conv3(F_7)
         # output = torch.stack(torch.split(output, 3 * 4, 1),2)
         # output = nn.functional.sigmoid(output) # this isn't in the paper
 
-        return output
+        # return output
 
 def define_network(network_class, opt):
     use_gpu = len(opt.gpu_ids) > 0
@@ -417,6 +389,8 @@ class PerceptualLoss(nn.Module):
 
 
 def load_vgg16(model_dir, gpu_ids):
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
     vgg = Vgg16()
     vgg.load_state_dict(torch.load('./checkpoints/vgg16.weight'))
     vgg = torch.nn.DataParallel(vgg, gpu_ids)

@@ -77,7 +77,7 @@ class SingleModel(BaseModel):
         self.over = input['B_low'].clone().detach().to(self.device)
         self.gt = input['C'].clone().detach().to(self.device)
         self.medium = input['M_low'].clone().detach().to(self.device)
-        self.guideMap = input['M'].clone().detach().to(self.device)
+        self.guideMap = input['B'].clone().detach().to(self.device)
 
     def get_image_paths(self):
         return self.image_paths

@@ -30,7 +30,7 @@ def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused):
     imgM = cv2.cvtColor(imgM, cv2.COLOR_BGR2RGB)
     imgM = double(imgM) / 255
 
-    guideMap = imgM
+    guideMap = imgB
 
     # original size (4k*3k) of ASUS data would be out of memory
     w, h = imgA.shape[1], imgA.shape[0]
@@ -81,7 +81,7 @@ def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused):
 
 def testphotos(u_path, m_path, o_path, save_path):
     model = create_model(opt)
-    weight_path = r'./checkpoints/um_v5/05-03-23-32/1500'
+    weight_path = r'./checkpoints/uo_v5/04-25-23-04/1500'
     model.load_network(model.MEF, 'MEF', weight_path)
     if not os.path.exists(save_path):
             os.makedirs(save_path)
