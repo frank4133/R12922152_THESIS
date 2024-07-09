@@ -17,7 +17,7 @@ def get_config(config):
     with open(config, 'r') as stream:
         return yaml.safe_load(stream)
 
-def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused):
+def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused, scale):
     imgA = cv2.imread(imgA_path)
     imgA = cv2.cvtColor(imgA, cv2.COLOR_BGR2RGB)
     imgB = cv2.imread(imgB_path)
@@ -30,19 +30,19 @@ def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused):
     imgM = cv2.cvtColor(imgM, cv2.COLOR_BGR2RGB)
     imgM = double(imgM) / 255
 
-    guideMap = imgB
 
     # original size (4k*3k) of ASUS data would be out of memory
-    w, h = imgA.shape[1], imgA.shape[0]
+    h = imgA.shape[0]
+    w = imgA.shape[1]
+    if w > h:
+        imgA = cv2.resize(imgA, (592 * scale, 400 * scale), interpolation=cv2.INTER_AREA)
+        imgB = cv2.resize(imgB, (592 * scale, 400 * scale), interpolation=cv2.INTER_AREA)
+        imgM = cv2.resize(imgM, (592 * scale, 400 * scale), interpolation=cv2.INTER_AREA)
 
-    if h > w:
-        imgA = cv2.rotate(imgA, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        imgB = cv2.rotate(imgB, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        imgM = cv2.rotate(imgM, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        guideMap = cv2.rotate(guideMap, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    imgA = cv2.resize(imgA, (384, 512), interpolation=cv2.INTER_AREA)
-    imgB = cv2.resize(imgB, (384, 512), interpolation=cv2.INTER_AREA)
-    imgM = cv2.resize(imgM, (384, 512), interpolation=cv2.INTER_AREA)
+    else:
+        imgA = cv2.resize(imgA, (400 * scale, 592 * scale), interpolation=cv2.INTER_AREA)
+        imgB = cv2.resize(imgB, (400 * scale, 592 * scale), interpolation=cv2.INTER_AREA)
+        imgM = cv2.resize(imgM, (400 * scale, 592 * scale), interpolation=cv2.INTER_AREA)
 
     imgA = torch.from_numpy(imgA)
     imgB = torch.from_numpy(imgB)
@@ -62,25 +62,22 @@ def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused):
     imgM = imgM.permute(0, 3, 2, 1).float()
     imgM = imgM.cuda().half()
 
-    guideMap = torch.from_numpy(guideMap)
-    guideMap = guideMap.unsqueeze(0)
-    guideMap = guideMap.permute(0, 3, 2, 1).float()
-    guideMap = guideMap.cuda().half()
-
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     start_event.record()
     with torch.no_grad():
-        output4 = model.MEF.forward(imgA, imgM, imgB, guideMap)
+        output4 = model.MEF.forward(imgA, imgM, imgB)
         end_event.record()
         torch.cuda.synchronize()
         print(f'Time taken: {start_event.elapsed_time(end_event)}')
         output4 = util.tensor2im_2(output4.detach())
+        output4 = cv2.resize(output4, (w, h), interpolation=cv2.INTER_CUBIC)
         outputimage3 = Image.fromarray(numpy.uint8(output4))
         outputimage3.save(img_fused)
 
 def testphotos(u_path, m_path, o_path, save_path):
     model = create_model(opt)
+    scale = 6
     weight_path = r'./checkpoints/uo_v5/04-25-23-04/1500'
     model.load_network(model.MEF, 'MEF', weight_path)
     if not os.path.exists(save_path):
@@ -98,13 +95,11 @@ def testphotos(u_path, m_path, o_path, save_path):
         m = os.path.join(m_path, name)
 
         save = os.path.join(save_path, name)
-        fuse(opt, model, u, o, m, save)
+        fuse(opt, model, u, o, m, save, scale)
         print(save)
 
     info_dict = {'Checkpoint': weight_path,
-                 'Underexposed': u_path,
-                 'Overexposed': o_path,
-                 'Medium': m_path}
+                 'Scale': scale}
     with open(save_path + '/info.txt', 'w') as f:
         for key, value in info_dict.items():
             f.write(f'{key}: {value}\n')

@@ -26,9 +26,38 @@ class Res_block(nn.Module):
         out = self.conv2(out) + x
         return out
 
+class Encoder(nn.Module):
+    def __init__(self, in_channels=3, mid_channels=32, out_channels=64, down_level=3):
+        super(Encoder, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride = 2, padding=1)
+        self.res_block1 = Res_block(mid_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.down = nn.ModuleList()  # Use nn.ModuleList to hold the modules
+        # first level: 32 -> 64
+        # second level: 64 -> 128
+        # third level: 128 -> 256
+        # fourth level: 256 -> 512
+        for i in range(down_level):
+            modules = nn.Sequential(
+                nn.Conv2d(mid_channels, out_channels, kernel_size=3, stride=2, padding=1),
+                Res_block(out_channels)
+            )
+            self.down.append(modules)
+            mid_channels *= 2
+            out_channels *= 2
+
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = self.res_block1(x)
+        for i in range(len(self.down)):
+            x = self.down[i](x)
+        return x
 
 class MEF_dynamic(nn.Module):
-    def __init__(self):
+    def __init__(self, opt):
         super(MEF_dynamic, self).__init__()
         filters_in = 3
         filters_out = 3
@@ -82,7 +111,7 @@ class MEF_dynamic(nn.Module):
         self.conv_D_1 = nn.Conv2d(nFeat * 4, nFeat * 3, 3, 1, 1, bias=True)
         self.conv_D_2 = Res_block(nFeat * 3)
 
-        self.conv_out = nn.Conv2d(nFeat * 3, nFeat * 3, 3, 1, 1, bias=True)
+        self.conv_out = nn.Conv2d(nFeat * 3, 3, 3, 1, 1, bias=True)
         self.relu = nn.ReLU(inplace=True)
         self.sigmoid = nn.Sigmoid()
 
@@ -146,11 +175,10 @@ class MEF_dynamic(nn.Module):
         D = self.conv_D_2(D)
         # print(f"D: {D.shape}")
 
-        output = torch.stack(torch.split(D, 3 * 4, 1),2)
         # print(f"output: {output.shape}")
-        # out = self.sigmoid(self.conv_out(D))
+        out = self.sigmoid(self.conv_out(D))
         #return D3, D2, D1, D0, D, out # for training
-        return output
+        return out
 
 # merging module
 class make_dilation_dense(nn.Module):
@@ -234,86 +262,6 @@ def define_network(network_class, opt):
     net.apply(weights_init)
     net.cuda(opt.gpu_ids[0])
     return net
-
-class GuideNN(nn.Module):
-    def __init__(self, opt):
-        super(GuideNN, self).__init__()
-
-        # guide complexity = 16
-        self.conv1 = nn.Conv2d(3, opt.guide_complexity, kernel_size=1, padding=0)
-        self.conv2 = nn.Conv2d(opt.guide_complexity, 1, kernel_size=1, padding=0) #nn.Tanh nn.Sigmoid
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        return self.sigmoid(self.conv2(self.conv1(x)))#.squeeze(1)
-
-class Slice(nn.Module):
-    def __init__(self):
-        super(Slice, self).__init__()
-
-    def forward(self, bilateral_grid, guidemap):
-        bilateral_grid = bilateral_grid.permute(0,3,4,2,1)
-        guidemap = guidemap.squeeze(1)
-        # grid: The bilateral grid with shape (gh, gw, gd, gc).
-        # guide: A guide image with shape (h, w). Values must be in the range [0, 1].
-        coeefs = slice.bilateral_slice(bilateral_grid, guidemap).permute(0,3,1,2)
-        return coeefs
-
-class ApplyCoeffs(nn.Module):
-    def __init__(self):
-        super(ApplyCoeffs, self).__init__()
-
-    def forward(self, coeff, full_res_input):
-
-        '''
-            Affine:
-            r = a11*r + a12*g + a13*b + a14
-            g = a21*r + a22*g + a23*b + a24
-            ...
-        '''
-
-        # out_channels = []
-        # for chan in range(n_out):
-        #     ret = scale[:, :, :, chan, 0]*input_image[:, :, :, 0]
-        #     for chan_i in range(1, n_in):
-        #         ret += scale[:, :, :, chan, chan_i]*input_image[:, :, :, chan_i]
-        #     if has_affine_term:
-        #         ret += offset[:, :, :, chan]
-        #     ret = tf.expand_dims(ret, 3)
-        #     out_channels.append(ret)
-
-        # ret = tf.concat(out_channels, 3)
-        """
-            R = r1[0]*r2 + r1[1]*g2 + r1[2]*b3 +r1[3]
-        """
-
-        # print(coeff.shape)
-        # R = torch.sum(full_res_input * coeff[:, 0:3, :, :], dim=1, keepdim=True) + coeff[:, 3:4, :, :]
-        # G = torch.sum(full_res_input * coeff[:, 4:7, :, :], dim=1, keepdim=True) + coeff[:, 7:8, :, :]
-        # B = torch.sum(full_res_input * coeff[:, 8:11, :, :], dim=1, keepdim=True) + coeff[:, 11:12, :, :]
-        R = torch.sum(full_res_input * coeff[:, 0:3, :, :], dim=1, keepdim=True) + coeff[:, 9:10, :, :]
-        G = torch.sum(full_res_input * coeff[:, 3:6, :, :], dim=1, keepdim=True) + coeff[:, 10:11, :, :]
-        B = torch.sum(full_res_input * coeff[:, 6:9, :, :], dim=1, keepdim=True) + coeff[:, 11:12, :, :]
-
-        return torch.cat([R, G, B], dim=1)
-
-class MEFPointwiseNN(nn.Module):
-
-    def __init__(self, opt):
-        super(MEFPointwiseNN, self).__init__()
-        self.coeffs = MEF_dynamic()
-        self.guide = GuideNN(opt=opt)
-        self.slice = Slice()
-        self.apply_coeffs = ApplyCoeffs()
-        # self.bsa = bsa.BilateralSliceApply()
-
-    def forward(self, lowU, lowM, lowO, full):
-        coeffs = self.coeffs(lowU, lowM, lowO)
-        guide = self.guide(full)
-        slice_coeffs = self.slice(coeffs, guide)
-        out = self.apply_coeffs(slice_coeffs, full)
-        # out = bsa.bsa(coeffs,guide,full)
-        return out
 
 
 class Vgg16(nn.Module):

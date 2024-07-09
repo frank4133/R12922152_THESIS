@@ -3,8 +3,6 @@ import numpy as np
 import torch
 from . import CR
 from torch import nn
-from collections import OrderedDict
-from torch.autograd import Variable
 from .base_model import BaseModel
 from . import networks
 from MEFSSIM.lossfunction import MEFSSIM
@@ -18,6 +16,7 @@ class SingleModel(BaseModel):
     def initialize(self, opt):
         BaseModel.initialize(self, opt)
         nb = opt.batchSize
+        size = opt.fineSize # crop size
         self.opt = opt
         # self.input_img = self.Tensor(nb, 3, size, size)
         # self.input_A_gray = self.Tensor(nb, 1, size, size)
@@ -33,7 +32,7 @@ class SingleModel(BaseModel):
                     param.requires_grad = False
 
         # cuda is defined in networks.py
-        self.MEF = networks.define_network(networks.MEFPointwiseNN, opt)
+        self.MEF = networks.define_network(networks.MEF_dynamic, opt)
 
         self.device = next(self.MEF.parameters()).device
         # self.netD_A = networks.define_D()
@@ -73,11 +72,10 @@ class SingleModel(BaseModel):
 
     #     self.image_paths = input['A_paths' if AtoB else 'B_paths'] # seems not used
     def set_input(self, input):
-        self.under = input['A_low'].clone().detach().to(self.device)
-        self.over = input['B_low'].clone().detach().to(self.device)
+        self.under = input['A'].clone().detach().to(self.device)
+        self.over = input['B'].clone().detach().to(self.device)
         self.gt = input['C'].clone().detach().to(self.device)
-        self.medium = input['M_low'].clone().detach().to(self.device)
-        self.guideMap = input['B'].clone().detach().to(self.device)
+        self.medium = input['M'].clone().detach().to(self.device)
 
     def get_image_paths(self):
         return self.image_paths
@@ -157,7 +155,8 @@ class SingleModel(BaseModel):
 
         # MSE loss
         # main_loss_weight is 1
-
+        def charbonnierLoss(predict, target):
+            return torch.mean(torch.sqrt(torch.pow((predict-target), 2) + 1e-6)) # epsilon=1e-3
         self.main_loss = 0
         if self.opt.main_loss_weight > 0:
             if self.opt.main_loss_type == 'mse':
@@ -166,7 +165,6 @@ class SingleModel(BaseModel):
             elif self.opt.main_loss_type == 'l1': # use L1 loss
                 main_loss = nn.L1Loss()
                 self.main_loss = main_loss(self.output1, self.gt)
-
 
         # SSIM loss
         # ssim_loss is 0.1
@@ -248,24 +246,10 @@ class SingleModel(BaseModel):
     def forward(self):
         # self.gt_gray = Variable(self.input_C_gray)
         # print(f'> net device: {next(self.attentionnet.parameters()).device}')
-        self.output1 = self.MEF.forward(self.under, self.medium, self.over, self.guideMap)
+        self.output1 = self.MEF.forward(self.under, self.medium, self.over)
 
         # input channels seem correct
-        # plt.figure(figsize=(10, 10))
 
-        # plt.subplot(1, 3, 1)
-        # plt.imshow(self.under[0].permute(1, 2, 0).detach().cpu().numpy())
-        # plt.title('Under')
-
-        # plt.subplot(1, 3, 2)
-        # plt.imshow(self.over[0].permute(1, 2, 0).detach().cpu().numpy())
-        # plt.title('Over')
-
-        # plt.subplot(1, 3, 3)
-        # plt.imshow(self.medium[0].permute(1, 2, 0).detach().cpu().numpy())
-        # plt.title('Medium')
-
-        # plt.show()
 
     def optimize_parameters(self, epoch):
 
