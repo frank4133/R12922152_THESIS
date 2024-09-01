@@ -6,7 +6,6 @@ class TrainOptions(BaseOptions):
         BaseOptions.initialize(self)
         self.parser.add_argument('--main_loss_weight', type=float, default=1)
         self.parser.add_argument('--under_path', type=str, default=None)
-        self.parser.add_argument('--medium_path', type=str, default=None)
         self.parser.add_argument('--over_path', type=str, default=None)
         self.parser.add_argument('--label_path', type=str, default=None)
         self.parser.add_argument('--main_loss_type', type=str, default='l1', help = 'l1, mse, charbonnier, etc')

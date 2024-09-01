@@ -23,14 +23,20 @@ class PairDataset(BaseDataset):
         self.opt = opt
         self.shortSide, self.longSide = [int(i) for i in opt.fineSize.split(',')]
         self.root = opt.dataroot
-        self.dir_A = os.path.join(opt.dataroot, opt.under_path) # might be under exposure dir
-        print(f"Using {self.dir_A} as under exposure dir")
-        self.dir_B = os.path.join(opt.dataroot, opt.over_path) # might be over exposure dir
-        self.dir_C = os.path.join(opt.dataroot, opt.label_path) # might be ground truth dir
 
-        # medium exposure
-        self.dir_M = os.path.join(opt.dataroot, opt.medium_path)
-        print(f"Using {self.dir_M} as medium exposure dir")
+        self.dir_A = []
+        self.dir_B = []
+        self.dir_C = []
+        for path in opt.under_path.split(','):
+            self.dir_A.append(os.path.join(opt.dataroot, path)) # might be under exposure
+        print(f"Using {self.dir_A} as under exposure dir")
+
+        for path in opt.over_path.split(','):
+            self.dir_B.append(os.path.join(opt.dataroot, path))
+
+        for path in opt.label_path.split(','):
+            self.dir_C.append(os.path.join(opt.dataroot, path))
+
         print(f"Using {self.dir_B} as over exposure dir")
         print(f"Using {self.dir_C} as ground truth dir")
 
@@ -39,15 +45,14 @@ class PairDataset(BaseDataset):
         self.C_paths = []
 
         # medium exposure
-        self.M_paths = []
 
-        for i in range(1, len(os.listdir(self.dir_A)) + 1):
-            self.A_paths.append(self.dir_A + "/" + str(i) + ".jpg")
-            self.B_paths.append(self.dir_B + "/" + str(i) + ".jpg")
-            self.C_paths.append(self.dir_C + "/" + str(i) + ".jpg")
+        for i in range(len(self.dir_A)):
+            for j in range(1, len(os.listdir(self.dir_A[i])) + 1):
+                self.A_paths.append(self.dir_A[i] + "/" + str(j) + ".jpg")
+                self.B_paths.append(self.dir_B[i] + "/" + str(j) + ".jpg")
+                self.C_paths.append(self.dir_C[i] + "/" + str(j) + ".jpg")
 
-            # medium exposure
-            self.M_paths.append(self.dir_M + "/" + str(i) + ".jpg")
+                # medium exposure
 
 
         self.image_num = len(self.A_paths)
@@ -74,7 +79,6 @@ class PairDataset(BaseDataset):
         C_path = self.C_paths[index % self.image_num]
 
         # medium exposure
-        M_path = self.M_paths[index % self.image_num]
 
 
         # Image.open() returns an image object and the convert() function converts the image to RGB
@@ -86,9 +90,6 @@ class PairDataset(BaseDataset):
         #     "low", "high").replace("A", "B")).convert('RGB')
         C_img = Image.open(C_path).convert('RGB')
 
-        # medium exposure
-        M_img = Image.open(M_path).convert('RGB')
-        # m = Image.open(M_path).convert('RGB')
 
         w, h = A_img.size
 
@@ -96,8 +97,7 @@ class PairDataset(BaseDataset):
             A_img = A_img.rotate(-90, expand=True)
             B_img = B_img.rotate(-90, expand=True)
             C_img = C_img.rotate(-90, expand=True)
-            M_img = M_img.rotate(-90, expand=True)
-        A_img, B_img, C_img, M_img = self.trans(A_img, B_img, C_img, M_img)
+        A_img, B_img, C_img = self.trans(A_img, B_img, C_img)
 
 
         # plt.figure(figsize=(10, 10))
@@ -124,8 +124,8 @@ class PairDataset(BaseDataset):
 
         A_img_low = process_img(A_img, self.opt.downsample)
         B_img_low = process_img(B_img, self.opt.downsample)
-        M_img_low = process_img(M_img, self.opt.downsample)
-        batch = {'A_low': A_img_low, 'B_low': B_img_low, 'C': C_img, 'M_low': M_img_low, 'M': M_img}
+        C_img_low = process_img(C_img, self.opt.downsample)
+        batch = {'A': A_img_low, 'B': B_img_low, 'C': C_img_low}
         return batch
 
     def __len__(self):

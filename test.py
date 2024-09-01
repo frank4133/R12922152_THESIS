@@ -17,7 +17,7 @@ def get_config(config):
     with open(config, 'r') as stream:
         return yaml.safe_load(stream)
 
-def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused, scale):
+def fuse(opt, model, imgA_path, imgB_path, img_fused, scale):
     imgA = cv2.imread(imgA_path)
     imgA = cv2.cvtColor(imgA, cv2.COLOR_BGR2RGB)
     imgB = cv2.imread(imgB_path)
@@ -25,24 +25,16 @@ def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused, scale):
     imgA = double(imgA) / 255
     imgB = double(imgB) / 255
 
-    # medium exposure
-    imgM = cv2.imread(imgM_path)
-    imgM = cv2.cvtColor(imgM, cv2.COLOR_BGR2RGB)
-    imgM = double(imgM) / 255
-
-
     # original size (4k*3k) of ASUS data would be out of memory
     h = imgA.shape[0]
     w = imgA.shape[1]
     if w > h:
-        imgA = cv2.resize(imgA, (592 * scale, 400 * scale), interpolation=cv2.INTER_AREA)
-        imgB = cv2.resize(imgB, (592 * scale, 400 * scale), interpolation=cv2.INTER_AREA)
-        imgM = cv2.resize(imgM, (592 * scale, 400 * scale), interpolation=cv2.INTER_AREA)
+        imgA = cv2.resize(imgA, (512 * scale, 384 * scale), interpolation=cv2.INTER_AREA)
+        imgB = cv2.resize(imgB, (512 * scale, 384 * scale), interpolation=cv2.INTER_AREA)
 
     else:
-        imgA = cv2.resize(imgA, (400 * scale, 592 * scale), interpolation=cv2.INTER_AREA)
-        imgB = cv2.resize(imgB, (400 * scale, 592 * scale), interpolation=cv2.INTER_AREA)
-        imgM = cv2.resize(imgM, (400 * scale, 592 * scale), interpolation=cv2.INTER_AREA)
+        imgA = cv2.resize(imgA, (384 * scale, 512 * scale), interpolation=cv2.INTER_AREA)
+        imgB = cv2.resize(imgB, (384 * scale, 512 * scale), interpolation=cv2.INTER_AREA)
 
     imgA = torch.from_numpy(imgA)
     imgB = torch.from_numpy(imgB)
@@ -56,17 +48,11 @@ def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused, scale):
     imgA = imgA.cuda().half()
     imgB = imgB.cuda().half()
 
-    # medium exposure
-    imgM = torch.from_numpy(imgM)
-    imgM = imgM.unsqueeze(0)
-    imgM = imgM.permute(0, 3, 2, 1).float()
-    imgM = imgM.cuda().half()
-
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     start_event.record()
     with torch.no_grad():
-        output4 = model.MEF.forward(imgA, imgM, imgB)
+        output4 = model.MEF.forward(imgA, imgB)
         end_event.record()
         torch.cuda.synchronize()
         print(f'Time taken: {start_event.elapsed_time(end_event)}')
@@ -75,10 +61,10 @@ def fuse(opt, model, imgA_path, imgB_path, imgM_path, img_fused, scale):
         outputimage3 = Image.fromarray(numpy.uint8(output4))
         outputimage3.save(img_fused)
 
-def testphotos(u_path, m_path, o_path, save_path):
+def testphotos(u_path, o_path, save_path):
     model = create_model(opt)
-    scale = 6
-    weight_path = r'./checkpoints/uo_v5/04-25-23-04/1500'
+    scale = 8
+    weight_path = r'./checkpoints/do_v8/09-01-21-40/1500'
     model.load_network(model.MEF, 'MEF', weight_path)
     if not os.path.exists(save_path):
             os.makedirs(save_path)
@@ -91,11 +77,8 @@ def testphotos(u_path, m_path, o_path, save_path):
         u = os.path.join(u_path, name)
         o = os.path.join(o_path, name)
 
-        # medium exposure
-        m = os.path.join(m_path, name)
-
         save = os.path.join(save_path, name)
-        fuse(opt, model, u, o, m, save, scale)
+        fuse(opt, model, u, o, save, scale)
         print(save)
 
     info_dict = {'Checkpoint': weight_path,
@@ -106,15 +89,15 @@ def testphotos(u_path, m_path, o_path, save_path):
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()
-    asus_path = [os.path.join('..', 'datasets/asus_test/under'), os.path.join('..', 'datasets/asus_test/medium'), os.path.join('..', 'datasets/asus_test/over')]
-    dmef_path = [os.path.join('..', 'datasets/DMEF/Test/test_1-1'), os.path.join('..', 'datasets/DMEF/Test/test_4-2'), os.path.join('..', 'datasets/DMEF/Test/test_7-1')]
+    asus_path = [os.path.join('..', 'datasets/asus_test/under'), os.path.join('..', 'datasets/asus_test/over')]
+    dmef_path = [os.path.join('..', 'datasets/DMEF/Test/test_1-1'), os.path.join('..', 'datasets/DMEF/Test/test_5-2')]
     inference_path = {'dmef': dmef_path, 'asus': asus_path}
     current_time = datetime.now().strftime('%m%d-%H%M%S')
     save_root = r'./output'
     save_dir = os.path.join(save_root, opt.git_tag, current_time)
     for key, value in inference_path.items():
-        u_path, m_path, o_path = value
+        u_path, o_path = value
         save_path = os.path.join(save_dir, key)
         print(save_path)
-        testphotos(u_path, m_path, o_path, save_path)
+        testphotos(u_path, o_path, save_path)
 

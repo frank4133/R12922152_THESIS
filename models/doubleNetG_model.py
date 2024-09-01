@@ -75,7 +75,6 @@ class SingleModel(BaseModel):
         self.under = input['A'].clone().detach().to(self.device)
         self.over = input['B'].clone().detach().to(self.device)
         self.gt = input['C'].clone().detach().to(self.device)
-        self.medium = input['M'].clone().detach().to(self.device)
 
     def get_image_paths(self):
         return self.image_paths
@@ -246,7 +245,7 @@ class SingleModel(BaseModel):
     def forward(self):
         # self.gt_gray = Variable(self.input_C_gray)
         # print(f'> net device: {next(self.attentionnet.parameters()).device}')
-        self.output1 = self.MEF.forward(self.under, self.medium, self.over)
+        self.output1 = self.MEF.forward(self.under, self.over)
 
         # input channels seem correct
 

@@ -1,14 +1,12 @@
 import os
 os.system('python train.py --dataroot \
-../datasets/DMEF \
+../datasets/DMEF/Train \
 --under_path \
-train_1-1 \
---medium_path \
-train_4-2 \
+train_1-2,train_1-2 \
 --over_path \
-train_7-1 \
+train_5-1,train_6-1 \
 --label_path \
-train_l-2 \
+135gtnew,136gtnew \
 --CT_patch_ratio \
 16 \
 --CT_num_heads \
@@ -62,7 +60,7 @@ relu5_1 \
 --display_port \
 8097 \
 --lr \
-0.0001 \
+0.00002 \
 --continue_train \
 0 \
 --continue_path \

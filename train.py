@@ -42,7 +42,7 @@ if __name__ == '__main__':
     else:
         init = 1
         current_time = datetime.now().strftime('%m-%d-%H-%M')
-        save_path = os.path.join('./datasets/checkpoints', opt.git_tag, current_time)
+        save_path = os.path.join('./checkpoints', opt.git_tag, current_time)
         os.makedirs(save_path, exist_ok=True)
         print(f'save_path: {save_path}')
 
