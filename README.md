@@ -18,13 +18,10 @@ python start_train.py
 ```
 ### Testing
 To avoid OOM errors and dimension mismatches during concatenation, we resize the input to around FHD, which is controlled by the variable `scale`.
- - [Checkpoint](https://drive.google.com/drive/folders/1sKH9u8KoFyrwmffNqiVr4oRw5-coCuB3?usp=drive_link)
+ - [Checkpoints & Outputs](https://drive.google.com/drive/folders/1x0HAWJ_dL1OpI4eAXvLM_xiQkG8OiS2A?usp=sharing)
 ```
 python start_test.py
 ```
-
-- [Output]()
-
 
 ### Citation
 The codes are derived from the below research.
