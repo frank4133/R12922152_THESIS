@@ -1,0 +1,25 @@
+=== Metrics Summary ===
+Total Images: 59
+
+Average Metrics:
+Average Time: 6356.1334 ms
+PSNR:     8.2787
+SSIM:     0.2627
+MS-SSIM:  0.5614
+VIF:      0.0852
+MEF-SSIM: 0.4558
+
+Standard Deviation:
+PSNR:     1.6959
+SSIM:     0.1386
+MS-SSIM:  0.1392
+VIF:      0.0839
+MEF-SSIM: 0.1904
+
+Best Results:
+PSNR:     261.jpg (11.6309)
+SSIM:     101.jpg (0.5348)
+
+Worst Results:
+PSNR:     301.jpg (5.3737)
+SSIM:     291.jpg (0.0259)

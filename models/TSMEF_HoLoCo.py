@@ -1,0 +1,202 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from torch.autograd import Variable
+from .HybridMEF import HybridMEF
+import util.util as util
+from PIL import Image
+import os
+from HoLoCo.models import networks
+
+
+class make_dilation_dense(nn.Module):
+    def __init__(self, nChannels, growthRate, kernel_size=3):
+        super(make_dilation_dense, self).__init__()
+        self.conv = nn.Conv2d(nChannels, growthRate, kernel_size=kernel_size,
+                            padding=(kernel_size-1)//2+1, bias=True, dilation=2)
+
+    def forward(self, x):
+        out = F.relu(self.conv(x))
+        out = torch.cat((x, out), 1)
+        return out
+
+# Dilation Residual dense block (DRDB)
+class DRDB(nn.Module):
+    def __init__(self, nChannels, nDenselayer, growthRate):
+        super(DRDB, self).__init__()
+        nChannels_ = nChannels
+        modules = []
+        for i in range(nDenselayer):
+            modules.append(make_dilation_dense(nChannels_, growthRate))
+            nChannels_ += growthRate
+        self.dense_layers = nn.Sequential(*modules)
+        self.conv_1x1 = nn.Conv2d(nChannels_, nChannels, kernel_size=1, padding=0, bias=True)
+
+    def forward(self, x):
+        out = self.dense_layers(x)
+        out = self.conv_1x1(out)
+        out = out + x
+        return out
+
+# Two-Stage AHDR model - AHDR 作為第二階段
+class TSMEF_HoLoCo(nn.Module):
+    def __init__(self, opt, stage1_weight_path=r"/tmp2/frank4133/new_mef/HoLoCo/checkpoints/"):
+        super(TSMEF_HoLoCo, self).__init__()
+
+        # 基本參數
+        nChannel = 3
+        nDenselayer = 6
+        nFeat = 64
+        growthRate = 32
+        self.opt = opt
+
+        self.stage1_weight_path = stage1_weight_path
+
+        # Stage1相關的組件
+        self.stage1_opt = None  # HoLoCo的opt
+        self.stage1_model_attentionnet = networks.define_basicatt1(gpu_ids=opt.gpu_ids)
+        self.stage1_model_attentionnet2 = networks.define_basicatt2(gpu_ids=opt.gpu_ids)
+        self.stage1_model_netG_A = networks.define_G(opt, retina=1)
+        self.stage1_model_netG_B = networks.define_G(opt, retina=0)
+
+        # ===== 第二階段模型（AHDR）=====
+        # F-1
+        self.conv1 = nn.Conv2d(nChannel, nFeat, kernel_size=3, padding=1, bias=True)
+        # F0
+        self.conv2 = nn.Conv2d(nFeat*3, nFeat, kernel_size=3, padding=1, bias=True)
+
+        # Attention modules
+        self.att11 = nn.Conv2d(nFeat*2, nFeat*2, kernel_size=3, padding=1, bias=True)
+        self.att12 = nn.Conv2d(nFeat*2, nFeat, kernel_size=3, padding=1, bias=True)
+        self.attConv1 = nn.Conv2d(nFeat, nFeat, kernel_size=3, padding=1, bias=True)
+
+        self.att31 = nn.Conv2d(nFeat*2, nFeat*2, kernel_size=3, padding=1, bias=True)
+        self.att32 = nn.Conv2d(nFeat*2, nFeat, kernel_size=3, padding=1, bias=True)
+        self.attConv3 = nn.Conv2d(nFeat, nFeat, kernel_size=3, padding=1, bias=True)
+
+        # DRDBs 3
+        self.RDB1 = DRDB(nFeat, nDenselayer, growthRate)
+        self.RDB2 = DRDB(nFeat, nDenselayer, growthRate)
+        self.RDB3 = DRDB(nFeat, nDenselayer, growthRate)
+
+        # Feature fusion (GFF)
+        self.GFF_1x1 = nn.Conv2d(nFeat*3, nFeat, kernel_size=1, padding=0, bias=True)
+        self.GFF_3x3 = nn.Conv2d(nFeat, nFeat, kernel_size=3, padding=1, bias=True)
+
+        # Fusion
+        self.conv_up = nn.Conv2d(nFeat, nFeat, kernel_size=3, padding=1, bias=True)
+
+        # Final conv
+        self.conv3 = nn.Conv2d(nFeat, 3, kernel_size=3, padding=1, bias=True)
+        self.activation = nn.GELU()
+
+    def _load_network(self, network, network_label, weight_path):
+        save_filename = '%s.pth' % network_label
+        save_path = os.path.join(weight_path, save_filename)
+        network.load_state_dict(torch.load(save_path))
+
+    def load_stage1_model(self):
+        print(f"Initializing Stage1 model from HoLoCo...")
+        print(f"Weight path: {self.stage1_weight_path}")
+
+        # 載入四個網路組件的權重
+        print("Loading Stage1 network weights...")
+        self._load_network(self.stage1_model_attentionnet, 'A_1', self.stage1_weight_path)
+        self._load_network(self.stage1_model_attentionnet2, 'A_2', self.stage1_weight_path)
+        self._load_network(self.stage1_model_netG_A, 'G_A', self.stage1_weight_path)
+        self._load_network(self.stage1_model_netG_B, 'G_B', self.stage1_weight_path)
+
+        # 設定為評估模式
+        self.stage1_model_attentionnet.eval()
+        self.stage1_model_attentionnet2.eval()
+        self.stage1_model_netG_A.eval()
+        self.stage1_model_netG_B.eval()
+
+        # 凍結stage1的參數
+        for param in self.stage1_model_attentionnet.parameters():
+            param.requires_grad = False
+        for param in self.stage1_model_attentionnet2.parameters():
+            param.requires_grad = False
+        for param in self.stage1_model_netG_A.parameters():
+            param.requires_grad = False
+        for param in self.stage1_model_netG_B.parameters():
+            param.requires_grad = False
+
+        print("Stage1 model (HoLoCo) initialized and loaded successfully!")
+
+    def forward(self, x1, x3):
+        """
+        x1: under-exposed image
+        x2: normal-exposed image (will be replaced by stage1 output if use_stage1=True)
+        x3: over-exposed image
+        """
+        with torch.no_grad():
+            # Attention network forward
+            output1, _ = self.stage1_model_attentionnet.forward(x1)
+            output2, _ = self.stage1_model_attentionnet2.forward(x3)
+            fusion_output = output1 * x1 + output2 * x3
+
+            # 準備給 refinement network 的輸入
+            fake_B = fusion_output
+            batch_size = fake_B.shape[0]
+            fake_B_gray = torch.empty(batch_size, 1, fake_B.shape[2], fake_B.shape[3],
+                                     device=fake_B.device, dtype=fake_B.dtype)
+
+            # 計算灰度圖（批次處理）
+            R = fake_B[:, 0, :, :]
+            G = fake_B[:, 1, :, :]
+            B = fake_B[:, 2, :, :]
+            fake_B_gray[:, 0, :, :] = 0.299 * R + 0.587 * G + 0.114 * B
+
+            output3_1, _ = self.stage1_model_netG_A.forward(fake_B, fake_B_gray)
+            output3_2, _ = self.stage1_model_netG_B.forward(fake_B, fake_B_gray)
+            x2 = output3_1 * 0.6 + output3_2 * 0.4
+
+        # output3 = util.tensor2im_2(x2.detach())
+        # # output3 = cv2.resize(output3, (h, w))
+        # outputimage3 = Image.fromarray(np.uint8(output3))
+        # outputimage3.save(r'/tmp2/frank4133/new_mef/output/test.png')
+
+        x2 = x2.to(dtype=x1.dtype)
+        # 第二階段：使用 AHDR 進行 refinement
+        # Feature extraction
+        F1_ = self.activation(self.conv1(x1))
+        F2_ = self.activation(self.conv1(x2))  # 使用第一階段生成的 x2
+        F3_ = self.activation(self.conv1(x3))
+
+        # Attention for under-exposed
+        F1_i = torch.cat((F1_, F2_), 1)
+        F1_A = self.activation(self.att11(F1_i))
+        F1_A = self.att12(F1_A)
+        F1_A = torch.sigmoid(F1_A)
+        F1_ = F1_ * F1_A
+
+        # Attention for over-exposed
+        F3_i = torch.cat((F3_, F2_), 1)
+        F3_A = self.activation(self.att31(F3_i))
+        F3_A = self.att32(F3_A)
+        F3_A = torch.sigmoid(F3_A)
+        F3_ = F3_ * F3_A
+
+        # Feature concatenation
+        F_ = torch.cat((F1_, F2_, F3_), 1)
+        F_0 = self.conv2(F_)
+
+        # DRDB blocks
+        F_1 = self.RDB1(F_0)
+        F_2 = self.RDB2(F_1)
+        F_3 = self.RDB3(F_2)
+
+        # Feature fusion
+        FF = torch.cat((F_1, F_2, F_3), 1)
+        FdLF = self.GFF_1x1(FF)
+        FGF = self.GFF_3x3(FdLF)
+        FDF = FGF + F2_
+
+        # Final processing
+        us = self.conv_up(FDF)
+        output = self.conv3(us)
+        output = torch.sigmoid(output)
+
+        return output
